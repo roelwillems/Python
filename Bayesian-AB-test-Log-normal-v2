@@ -1,0 +1,183 @@
+
+# coding: utf-8
+
+# In[54]:
+
+from numpy.random import beta as beta_dist
+from numpy import mean, concatenate, zeros
+from numpy.random import lognormal
+import numpy as np
+from scipy.stats import norm, invgamma
+from numpy import sqrt, sum, log, exp
+import pandas as pd
+
+
+# In[69]:
+
+def draw_mus_and_sigmas(data,m0,k0,s_sq0,v0,n_samples=10000):
+    # number of samples
+    N = len(data)
+    # find the mean of the data
+    the_mean = mean(data) 
+    # sum of squared differences between data and mean
+    SSD = sum( (data - the_mean)**2 ) 
+
+    # combining the prior with the data - page 79 of Gelman et al.
+    # to make sense of this note that 
+    # inv-chi-sq(v,s^2) = inv-gamma(v/2,(v*s^2)/2)
+    kN = float(k0 + N)
+    mN = (k0/kN)*m0 + (N/kN)*the_mean
+    vN = v0 + N
+    vN_times_s_sqN = v0*s_sq0 + SSD + (N*k0*(m0-the_mean)**2)/kN
+
+    # 1) draw the variances from an inverse gamma 
+    # (params: alpha, beta)
+    alpha = vN/2
+    beta = vN_times_s_sqN/2
+    # thanks to wikipedia, we know that:
+    # if X ~ inv-gamma(a,1) then b*X ~ inv-gamma(a,b)
+    sig_sq_samples = beta*invgamma.rvs(alpha,size=n_samples)
+
+    # 2) draw means from a normal conditioned on the drawn sigmas
+    # (params: mean_norm, var_norm)
+    mean_norm = mN
+    var_norm = np.sqrt(sig_sq_samples/kN)
+    mu_samples = norm.rvs(mean_norm,scale=var_norm,size=n_samples)
+
+    # 3) return the mu_samples and sig_sq_samples
+    return mu_samples, sig_sq_samples
+
+def draw_log_normal_means(data,m0,k0,s_sq0,v0,n_samples=10000):
+    # log transform the data
+    log_data = np.log(data)
+    # get samples from the posterior
+    mu_samples, sig_sq_samples = draw_mus_and_sigmas(log_data,m0,k0,s_sq0,v0,n_samples)
+    # transform into log-normal means
+    log_normal_mean_samples = exp(mu_samples + sig_sq_samples/2)
+    return log_normal_mean_samples
+
+
+# In[68]:
+
+## generate random log-normal data
+# A_log_norm_data = lognormal(mean=4.10, sigma=1.0, size=100)
+# B_log_norm_data = lognormal(mean=4.00, sigma=1.0, size=100)
+## appending many many zeros
+# A_data = concatenate([A_log_norm_data,zeros((10000))])
+# B_data = concatenate([B_log_norm_data,zeros((10000))])
+
+
+# In[57]:
+
+df = pd.read_csv("C:/Users/pnlrw179/Documents/Untitled Folder/logNormal/[CO-105]_Afdeling_navigatie_toevoegen_aan_super_hero-Nov_16_2016.csv")
+
+
+# In[70]:
+
+df[["User_GUID","VariationGroup_ID", "Bedankt nieuw - Prijs subtotaal, TotalValue (1971)"]].head()
+
+
+# In[71]:
+
+A_data = df[df['VariationGroup_ID']==3128]["Bedankt nieuw - Prijs subtotaal, TotalValue (1971)"].fillna(0)
+B_data = df[df['VariationGroup_ID']==3129]["Bedankt nieuw - Prijs subtotaal, TotalValue (1971)"].fillna(0)
+
+
+# In[ ]:
+
+
+
+
+# In[98]:
+
+# modeling zero vs. non-zero
+non_zeros_A = sum(A_data > 0)
+total_A = len(A_data)
+non_zeros_B = sum(B_data > 0)
+total_B = len(B_data)
+alpha = 1 # uniform prior
+beta = 1
+
+
+# In[99]:
+
+A_conv_samps = beta_dist(non_zeros_A+alpha, total_A-non_zeros_A+beta, non_zeros_A)
+B_conv_samps = beta_dist(non_zeros_B+alpha, total_B-non_zeros_B+beta, non_zeros_B)
+
+
+# In[112]:
+
+# modeling the non-zeros with a log-normal
+A_non_zero_data = A_data[A_data > 0]
+B_non_zero_data = B_data[B_data > 0]
+
+
+m0 = 4. 
+k0 = 1. 
+s_sq0 = 1. 
+v0 = 1. 
+
+A_order_samps = draw_log_normal_means(A_non_zero_data,m0,k0,s_sq0,v0,n_samples=len(A_non_zero_data))
+B_order_samps = draw_log_normal_means(B_non_zero_data,m0,k0,s_sq0,v0,n_samples=len(B_non_zero_data))
+
+
+# In[141]:
+
+# combining the two
+A_rps_samps = A_conv_samps*A_order_samps
+B_rps_samps = B_conv_samps*B_order_samps
+
+
+mean_A = mean(A_rps_samps)
+std_A = np.std(A_rps_samps)*2
+mean_B = mean(B_rps_samps)
+std_B = np.std(B_rps_samps)*2
+    
+# the result
+print ('A is better than B: ',sum(A_rps_samps > mean_B+std_B)/len(A_rps_samps))
+print ('B is worse than A: ',sum(B_rps_samps < mean_A-std_A)/len(B_rps_samps))
+
+
+# In[159]:
+
+compare_test(A_rps_samps,B_rps_samps)
+
+
+# In[158]:
+
+def compare_test(A,B):
+    if mean(A)> mean(B):
+        res_A = mean(B) + np.std(B)*2
+        res_B = mean(A) - np.std(A)*2
+        ar = ['better','worse']
+        color = ['g','r']
+    else:
+        res_A = mean(B) - np.std(B)*2
+        res_B = mean(A) + np.std(A)*2
+        ar = ['worse','better']
+        color = ['r','g']
+    print('A is',ar[0], 'than B: ',round(100*sum(A > res_A)/len(A),1))
+    print('B is',ar[1], 'than A: ',sum(B < res_B)/len(B))
+    plt.figure(figsize=(15,5))
+    plt.hist(A,color=color[0],alpha=0.5,label=['A']);
+    plt.axvline(res_A,color='k',label='border_A')
+    plt.hist(B,color=color[1],alpha=0.5,label=['B']);
+    plt.axvline(res_B,color='b',label='border_B')
+    plt.legend()
+    plt.show()
+    print('Mean A:',mean(A))
+
+
+# In[139]:
+
+
+
+
+# In[116]:
+
+import matplotlib
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+get_ipython().magic('matplotlib inline')
